@@ -259,14 +259,8 @@ int main(void) {
 					aci_previous[i] = fftBuffer[i]; //initialise aci_previous
 					float32_t mean = sum[i] * segments_in_time_span_inverse
 							* 2.0f;
-					cvr_noise[i] =
-							mean
-									+ 0.1f
-											* sqrtf(
-													sumSquared[i]
-															* segments_in_time_span_inverse
-															* 2.0f
-															- mean * mean);
+					cvr_noise[i] = mean + 0.1f * sqrtf(sumSquared[i] * segments_in_time_span_inverse * 2.0f
+									- mean * mean);
 				}
 				//reset sum and sumSquared
 				reset(sum, FREQ_BINS);
