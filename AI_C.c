@@ -9,7 +9,7 @@ typedef struct {
 	float Im;
 } complex;
 
-#define PI 			3.14159265358979323846264338f
+#define PI 		3.14159265358979323846264338f
 #define AMP_THR 	1.2589f 	//amplitude equivalent to 2 dB
 #define FREQ_BINS 	256
 #define N_INDICES	4			//number of indices to write to sd card
@@ -135,19 +135,6 @@ int initial_segments_in_time_span; // number of segments in the very first time_
 float segments_in_time_span_inverse, segments_in_time_span_log2_inverse,
 		initial_segments_in_time_span_log2_inverse;
 
-/*
- fft(v,N):
- [0] If N==1 then return.
- [1] For k = 0 to N/2-1, let ve[k] = v[2*k]
- [2] Compute fft(ve, N/2);
- [3] For k = 0 to N/2-1, let vo[k] = v[2*k+1]
- [4] Compute fft(vo, N/2);
- [5] For m = 0 to N/2-1, do [6] through [9]
- [6]   Let w.re = cos(2*PI*m/N)
- [7]   Let w.im = -sin(2*PI*m/N)
- [8]   Let v[m] = ve[m] + w*vo[m]
- [9]   Let v[m+N/2] = ve[m] - w*vo[m]
- */
 void fft(complex *v, int n, complex *tmp) {
 	if (n > 1) { /* otherwise, do nothing and return */
 		int k, m;
@@ -300,7 +287,7 @@ int main(void) {
 					h_t_h[i] = h_t_h[i] * factor_i
 							- 96.0f * factor4_i * factor4_i - 2.5f * factor2_i
 							+ 1.0005f; // approx by a degree 8 polynomial err<=0.004 between 0.998 and 1
-					// h_t_true ~= h_t_approx * 1.13043478f (1.3/1.15)
+
 					if (a_i - cvr_noise[i] > AMP_THR)
 						cvr_count[i]++;
 
@@ -322,14 +309,8 @@ int main(void) {
 				for (int i = 0; i < FREQ_BINS; i++) {
 					float32_t mean = sum[i] * segments_in_time_span_inverse
 							* 2.0f;
-					cvr_noise[i] =
-							mean
-									+ 0.1f
-											* sqrtf(
-													sumSquared[i]
-															* segments_in_time_span_inverse
-															* 2.0f
-															- mean * mean);
+					cvr_noise[i] = mean + 0.1f * sqrtf(sumSquared[i] * segments_in_time_span_inverse * 2.0f
+									   - mean * mean);
 				}
 				reset(aci_sumDiff, FREQ_BINS);
 				reset(sum, FREQ_BINS);
@@ -351,7 +332,7 @@ int main(void) {
 				float32_t factor4_i = factor2_i * factor2_i;
 				h_t_h[i] = h_t_h[i] * factor_i - 96.0f * factor4_i * factor4_i
 						- 2.5f * factor2_i + 1.0005f; // approx by a degree 8 polynomial err<=0.004 between 0.998 and 1
-				// h_t_true ~= h_t_approx * 1.13043478f (1.3/1.15)
+
 				if (a_i - cvr_noise[i] > AMP_THR)
 					cvr_count[i]++;
 
@@ -371,13 +352,8 @@ int main(void) {
 				/* Update cvr_noise that will be used for the next time_span */
 				for (int i = 0; i < FREQ_BINS; i++) {
 					float32_t mean = sum[i] * segments_in_time_span_inverse;
-					cvr_noise[i] =
-							mean
-									+ 0.1f
-											* sqrtf(
-													sumSquared[i]
-															* segments_in_time_span_inverse
-															- mean * mean);
+					cvr_noise[i] = mean + 0.1f * sqrtf(sumSquared[i] * segments_in_time_span_inverse
+									- mean * mean);
 				}
 				reset(aci_sumDiff, FREQ_BINS);
 				reset(sum, FREQ_BINS);
