@@ -40,6 +40,8 @@
 #define NUMBER_OF_SAMPLES_IN_BUFFER         512
 #define NUMBER_OF_SAMPLES_IN_DMA_TRANSFER   512
 #define NUMBER_OF_BUFFERS_TO_SKIP           32
+#define MAX_FLOATS_TO_WRITE				8*1024			//the maximum floats to write in one call
+#define MAX_BYTES_TO_WRITE					32*1024			//the maximum bytes to write in one call
 static volatile int dataCount = -NUMBER_OF_BUFFERS_TO_SKIP;
 
 /* WAVE header constant */
@@ -49,9 +51,10 @@ static volatile int dataCount = -NUMBER_OF_BUFFERS_TO_SKIP;
 #define LENGTH_OF_COMMENT                   128
 
 /* Acoustic indices constants */
-#define FREQ_BINS   						256 		//number of frequency bins
-#define N_INDICES							4			//number of indices to write to sd card
-#define NOISE_FACTOR						0.3f		//noise = mean+NOISE_FACTOR*std
+#define FREQ_BINS			    256 		//number of frequency bins
+#define N_INDICES			    4			//number of indices to write to sd card
+#define TIME_SPAN			    60			//time span for one index in seconds
+#define NOISE_FACTOR			    0.3f		//noise = mean+NOISE_FACTOR*std
 static const float32_t hamming[NUMBER_OF_SAMPLES_IN_DMA_TRANSFER] = //hamming filter
 		{ 0.08, 0.08003477, 0.08013909, 0.08031292, 0.08055626, 0.08086906,
 				0.08125127, 0.08170284, 0.0822237, 0.08281376, 0.08347295,
@@ -240,7 +243,6 @@ typedef struct {
 
 typedef struct {
 	uint32_t time;
-	uint8_t time_span;
 	uint8_t gain;
 	uint8_t clockBand;
 	uint8_t clockDivider;
@@ -256,27 +258,15 @@ typedef struct {
 
 #pragma pack(pop)
 
-configSettings_t defaultConfigSettings = {
-    .time = 0,
-	.time_span = 60,
-    .gain = 2,
-    .clockBand = 4,
-    .clockDivider = 2,
-    .acquisitionCycles = 2,
-    .oversampleRate = 16,
-    .sampleRate = 48000,
-    .sleepDuration = 86400,
-    .recordDuration = 86400,
-    .enableLED = 1,
-    .activeStartStopPeriods = 0,
-    .startStopPeriods = {
-        {.startMinutes = 60, .stopMinutes = 120},
-        {.startMinutes = 300, .stopMinutes = 420},
-        {.startMinutes = 540, .stopMinutes = 600},
-        {.startMinutes = 720, .stopMinutes = 780},
-        {.startMinutes = 900, .stopMinutes = 960}
-    }
-};
+configSettings_t defaultConfigSettings = { .time = 0, .gain = 2,
+		.clockBand = 4, .clockDivider = 2, .acquisitionCycles = 2,
+		.oversampleRate = 16, .sampleRate = 48000, .sleepDuration = 10000,
+		.recordDuration = 120, .enableLED = 1, .activeStartStopPeriods = 0,
+		.startStopPeriods = { { .startMinutes = 60, .stopMinutes = 120 }, {
+				.startMinutes = 300, .stopMinutes = 420 }, {
+				.startMinutes = 540, .stopMinutes = 600 }, {
+				.startMinutes = 720, .stopMinutes = 780 }, {
+				.startMinutes = 900, .stopMinutes = 960 } } };
 
 uint32_t *previousSwitchPosition = (uint32_t*) AM_BACKUP_DOMAIN_START_ADDRESS;
 
@@ -315,7 +305,7 @@ bool enableLED);
 static void scheduleRecording(uint32_t currentTime,
 		uint32_t *timeOfNextRecording, uint32_t *durationOfNextRecording);
 static void reset(float32_t* array, int size);
-static float32_t fasterlog2 (float32_t x);
+static float32_t fasterlog2(float32_t x);
 
 /* Main function */
 
@@ -351,41 +341,50 @@ int main(void) {
 
 	}
 
-	/* Handle the case that the switch is in USB position  */
+    /* Handle the case that the switch is in USB position  */
 
-	if (switchPosition == AM_SWITCH_USB) {
+    if (switchPosition == AM_SWITCH_USB) {
 
-		AudioMoth_handleUSB();
+        AudioMoth_handleUSB();
+
+        SAVE_SWITCH_POSITION_AND_POWER_DOWN(DEFAULT_WAIT_INTERVAL);
+
+    }
+
+	/* Handle the case that the switch is in CUSTOM position but the time has not been set */
+
+	if (switchPosition == AM_SWITCH_CUSTOM
+			&& (AudioMoth_hasTimeBeenSet() == false
+					|| configSettings->activeStartStopPeriods == 0)) {
+
+		FLASH_LED(Both, SHORT_LED_FLASH_DURATION)
 
 		SAVE_SWITCH_POSITION_AND_POWER_DOWN(DEFAULT_WAIT_INTERVAL);
 
 	}
 
+	/* Calculate time of next recording if switch has changed position */
+
 	uint32_t currentTime = AudioMoth_getTime();
 
-	/* Handle the case that the switch if switch has changed position and is CUSTOM */
+	if (switchPosition != *previousSwitchPosition) {
 
-	if (switchPosition != *previousSwitchPosition && switchPosition == AM_SWITCH_CUSTOM) {
+		if (switchPosition == AM_SWITCH_DEFAULT) {
 
-		/* Set parameters to start recording 5 minutes later*/
+			/* Set parameters to start recording now */
 
-//		*timeOfNextRecording = ((currentTime>>6)+1)<<6; //start from the next exact minute
+			*timeOfNextRecording = currentTime;
 
-		*timeOfNextRecording = currentTime + 5*60;
+			*durationOfNextRecording = configSettings->recordDuration;
 
-		*durationOfNextRecording = configSettings->recordDuration;
+		} else {
 
-	}
+			/* Determine starting time and duration of next recording */
 
-	/* Calculate time of next recording if switch has changed position and is DEFAULT */
+			scheduleRecording(currentTime, timeOfNextRecording,
+					durationOfNextRecording);
 
-	if (switchPosition != *previousSwitchPosition && switchPosition == AM_SWITCH_DEFAULT) {
-
-		/* Set parameters to start recording now */
-
-		*timeOfNextRecording = currentTime;
-
-		*durationOfNextRecording = configSettings->recordDuration;
+		}
 
 	}
 
@@ -398,7 +397,26 @@ int main(void) {
 
 		makeRecording(currentTime, *durationOfNextRecording, enableLED);
 
-		*timeOfNextRecording = currentTime + configSettings->recordDuration + configSettings->sleepDuration;
+		if (switchPosition == AM_SWITCH_DEFAULT) {
+
+			/* Set parameters to start recording after sleep period */
+
+			if (!recordingCancelled) {
+
+				*timeOfNextRecording = currentTime
+						+ configSettings->recordDuration
+						+ configSettings->sleepDuration;
+
+			}
+
+		} else {
+
+			/* Determine starting time and duration of next recording */
+
+			scheduleRecording(currentTime, timeOfNextRecording,
+					durationOfNextRecording);
+
+		}
 
 	} else if (enableLED) {
 
@@ -554,11 +572,14 @@ static void reset(float32_t* array, int size) {
 		array[i] = 0.0f;
 }
 
-static float32_t fasterlog2 (float32_t x){
-  union { float32_t f; unsigned int i; } vx = { x };
-  float32_t y = vx.i;
-  y *= 1.1920928955078125e-7f;
-  return y - 126.94269504f;
+static float32_t fasterlog2(float32_t x) {
+	union {
+		float32_t f;
+		unsigned int i;
+	} vx = { x };
+	float32_t y = vx.i;
+	y *= 1.1920928955078125e-7f;
+	return y - 126.94269504f;
 }
 
 /* Save recording to SD card */
@@ -566,7 +587,7 @@ static float32_t fasterlog2 (float32_t x){
 static void makeRecording(uint32_t currentTime, uint32_t recordDuration,
 bool enableLED) {
 
-	if(enableLED){
+	if (enableLED) {
 		AudioMoth_setGreenLED(true);
 	}
 
@@ -578,51 +599,61 @@ bool enableLED) {
 
 	recordingCancelled = false;
 
-    buffers[0] = (int16_t*)AM_EXTERNAL_SRAM_START_ADDRESS;
+	buffers[0] = (int16_t*) AM_EXTERNAL_SRAM_START_ADDRESS;
 
 	for (int i = 1; i < NUMBER_OF_BUFFERS; i += 1) {
 		buffers[i] = buffers[i - 1] + NUMBER_OF_SAMPLES_IN_BUFFER;
 	}
 
-	float32_t * dataBuffer = (float32_t*) (AM_EXTERNAL_SRAM_START_ADDRESS + 2 * NUMBER_OF_BUFFERS * NUMBER_OF_SAMPLES_IN_BUFFER);
+	float32_t * dataBuffer = (float32_t*) (AM_EXTERNAL_SRAM_START_ADDRESS
+			+ 2 * NUMBER_OF_BUFFERS * NUMBER_OF_SAMPLES_IN_BUFFER);
 
-    /* Switch to HFRCO */
+	/* Switch to HFRCO */
 
-    if (configSettings->clockBand < AM_HFXO) {
+	if (configSettings->clockBand < AM_HFXO) {
 
-        AudioMoth_enableHFRCO(configSettings->clockBand);
+		AudioMoth_enableHFRCO(configSettings->clockBand);
 
-        uint32_t clockFrequency = AudioMoth_getClockFrequency(configSettings->clockBand);
+		uint32_t clockFrequency = AudioMoth_getClockFrequency(
+				configSettings->clockBand);
 
-        uint32_t actualSampleRate = AudioMoth_calculateSampleRate(clockFrequency, configSettings->clockDivider, configSettings->acquisitionCycles, configSettings->oversampleRate);
+		uint32_t actualSampleRate = AudioMoth_calculateSampleRate(
+				clockFrequency, configSettings->clockDivider,
+				configSettings->acquisitionCycles,
+				configSettings->oversampleRate);
 
-        uint32_t targetFrequency = (float)clockFrequency * (float)configSettings->sampleRate / (float)actualSampleRate;
+		uint32_t targetFrequency = (float) clockFrequency
+				* (float) configSettings->sampleRate / (float) actualSampleRate;
 
-        AudioMoth_calibrateHFRCO(targetFrequency);
+		AudioMoth_calibrateHFRCO(targetFrequency);
 
-        AudioMoth_selectHFRCO();
+		AudioMoth_selectHFRCO();
 
-    }
+	}
 
-    /* Initialise microphone for recording */
+	/* Initialise microphone for recording */
 
-    AudioMoth_enableExternalSRAM();
+	AudioMoth_enableExternalSRAM();
 
-    AudioMoth_enableMicrophone(configSettings->gain, configSettings->clockDivider, configSettings->acquisitionCycles, configSettings->oversampleRate);
+	AudioMoth_enableMicrophone(configSettings->gain,
+			configSettings->clockDivider, configSettings->acquisitionCycles,
+			configSettings->oversampleRate);
 
-    AudioMoth_initialiseDirectMemoryAccess(buffers[0], buffers[0] + NUMBER_OF_SAMPLES_IN_DMA_TRANSFER, NUMBER_OF_SAMPLES_IN_DMA_TRANSFER);
+	AudioMoth_initialiseDirectMemoryAccess(buffers[0],
+			buffers[0] + NUMBER_OF_SAMPLES_IN_DMA_TRANSFER,
+			NUMBER_OF_SAMPLES_IN_DMA_TRANSFER);
 
-    AudioMoth_startMicrophoneSamples();
+	AudioMoth_startMicrophoneSamples();
 
-    /* Initialise file system and open a new file */
+	/* Initialise file system and open a new file */
 
-    RETURN_ON_ERROR(AudioMoth_enableFileSystem());
+	RETURN_ON_ERROR(AudioMoth_enableFileSystem());
 
-    /* Open a file with the name as a UNIX time stamp in HEX */
+	/* Open a file with the name as a UNIX time stamp in HEX */
 
-    sprintf(fileName, "%08X.TXT", (unsigned int)currentTime);
+	sprintf(fileName, "%08X.TXT", (unsigned int) currentTime);
 
-    RETURN_ON_ERROR(AudioMoth_openFile(fileName));
+	RETURN_ON_ERROR(AudioMoth_openFile(fileName));
 
 	/* Main record loop */
 
@@ -634,17 +665,20 @@ bool enableLED) {
 	arm_rfft_fast_init_f32(&S1, NUMBER_OF_SAMPLES_IN_DMA_TRANSFER); // size = 2*256
 
 	/* Compute constants */
-	segments_in_time_span = configSettings->time_span * configSettings->sampleRate
-				/ (2 * FREQ_BINS); //total number of segments in one whole time span
+	segments_in_time_span = TIME_SPAN
+			* configSettings->sampleRate / (2 * FREQ_BINS); //total number of segments in one whole time span
 	segments_in_time_span_inverse = 1.0f / segments_in_time_span;
-	segments_in_time_span_log2_inverse = 1.0f / fasterlog2(segments_in_time_span);
+	segments_in_time_span_log2_inverse = 1.0f
+			/ fasterlog2(segments_in_time_span);
 	initial_segments_in_time_span = segments_in_time_span / 2; //initial time span is half size of a normal time span
 	initial_segments_in_time_span_log2_inverse = 1.0f
-				/ fasterlog2(initial_segments_in_time_span);
+			/ fasterlog2(initial_segments_in_time_span);
 
 	int cycleCount = 0;
 
-	int cycles_to_write_to_sd = recordDuration/configSettings->time_span;
+	int cycles_to_write_to_sd = recordDuration / TIME_SPAN;
+
+	int floatsAdded = 0;
 
 	while (!recordingCancelled && cycleCount < cycles_to_write_to_sd) {
 
@@ -655,7 +689,8 @@ bool enableLED) {
 
 			if (buffersProcessed >= NUMBER_OF_BUFFERS_TO_SKIP) {
 				/* Convert to float32 */
-				arm_q15_to_float(buffers[readBuffer], floatBufferReady, NUMBER_OF_SAMPLES_IN_BUFFER);
+				arm_q15_to_float(buffers[readBuffer], floatBufferReady,
+						NUMBER_OF_SAMPLES_IN_BUFFER);
 
 				/* Apply hamming filter */
 				for (int i = 0; i < NUMBER_OF_SAMPLES_IN_BUFFER; i++) {
@@ -676,24 +711,34 @@ bool enableLED) {
 					if (dataCount == initial_segments_in_time_span) { //update cvr_noise when the initial time span is finished
 						for (int i = 0; i < FREQ_BINS; i++) {
 							aci_previous[i] = fftBuffer[i]; //initialise aci_previous
-							float32_t mean = sum[i] * segments_in_time_span_inverse * 2.0f;
-							cvr_noise[i] = mean + NOISE_FACTOR * sqrtf(
-									sumSquared[i] * segments_in_time_span_inverse * 2.0f
-									- mean * mean);
+							float32_t mean = sum[i]
+									* segments_in_time_span_inverse * 2.0f;
+							cvr_noise[i] =
+									mean
+											+ NOISE_FACTOR
+													* sqrtf(
+															sumSquared[i]
+																	* segments_in_time_span_inverse
+																	* 2.0f
+																	- mean
+																			* mean);
 						}
 						//reset sum and sumSquared
 						reset(sum, FREQ_BINS);
 						reset(sumSquared, FREQ_BINS);
 					}
-					if (initial_segments_in_time_span <= dataCount && dataCount < segments_in_time_span) { // for the remaining time in the first time span (the other half)
+					if (initial_segments_in_time_span <= dataCount
+							&& dataCount < segments_in_time_span) { // for the remaining time in the first time span (the other half)
 						for (int i = 0; i < FREQ_BINS; i++) {
 							float32_t a_i = fftBuffer[i]; //current amplitude
 							float32_t a_i_2 = a_i * a_i;  //squared amp
 
 							aci_sumDiff[i] += fabsf(a_i - aci_previous[i]);
 
-							float32_t factor_i = sumSquared[i] / (sumSquared[i] + a_i_2);
-							h_t_h[i] = h_t_h[i] * factor_i - (1 - factor_i) * fasterlog2(1 - factor_i);
+							float32_t factor_i = sumSquared[i]
+									/ (sumSquared[i] + a_i_2);
+							h_t_h[i] = h_t_h[i] * factor_i
+									- (1 - factor_i) * fasterlog2(1 - factor_i);
 							if (a_i - cvr_noise[i] > 0)
 								cvr_count[i]++;
 
@@ -705,16 +750,27 @@ bool enableLED) {
 					if (dataCount == segments_in_time_span) { //when the first time span in total is finished (dataCount==segments_in_time_span), compute the indices
 						for (int i = 0; i < FREQ_BINS; i++) {
 							*dataBuffer++ = aci_sumDiff[i] / sum[i]; //aci
-							*dataBuffer++ = h_t_h[i] * initial_segments_in_time_span_log2_inverse; //h_t
-							*dataBuffer++ = cvr_count[i] * segments_in_time_span_inverse * 2.0f; //cvr
+							*dataBuffer++ =
+									h_t_h[i]
+											* initial_segments_in_time_span_log2_inverse; //h_t
+							*dataBuffer++ = cvr_count[i]
+									* segments_in_time_span_inverse * 2.0f; //cvr
 							*dataBuffer++ = sum[i]; //sum of ffts
+							floatsAdded += N_INDICES;
 						}
 						/* Update cvr_noise that will be used for the next time_span */
 						for (int i = 0; i < FREQ_BINS; i++) {
-							float32_t mean = sum[i] * segments_in_time_span_inverse * 2.0f;
-							cvr_noise[i] = mean + NOISE_FACTOR * sqrtf(
-									sumSquared[i] * segments_in_time_span_inverse * 2.0f
-									- mean * mean);
+							float32_t mean = sum[i]
+									* segments_in_time_span_inverse * 2.0f;
+							cvr_noise[i] =
+									mean
+											+ NOISE_FACTOR
+													* sqrtf(
+															sumSquared[i]
+																	* segments_in_time_span_inverse
+																	* 2.0f
+																	- mean
+																			* mean);
 						}
 						reset(aci_sumDiff, FREQ_BINS);
 						reset(sum, FREQ_BINS);
@@ -731,8 +787,10 @@ bool enableLED) {
 
 						aci_sumDiff[i] += fabsf(a_i - aci_previous[i]);
 
-						float32_t factor_i = sumSquared[i] / (sumSquared[i] + a_i_2);
-						h_t_h[i] = h_t_h[i] * factor_i - (1 - factor_i) * fasterlog2(1 - factor_i);
+						float32_t factor_i = sumSquared[i]
+								/ (sumSquared[i] + a_i_2);
+						h_t_h[i] = h_t_h[i] * factor_i
+								- (1 - factor_i) * fasterlog2(1 - factor_i);
 						if (a_i - cvr_noise[i] > 0)
 							cvr_count[i]++;
 
@@ -743,16 +801,25 @@ bool enableLED) {
 					if (dataCount == segments_in_time_span) { //if the time span is completed, compute indices and write to ram
 						for (int i = 0; i < FREQ_BINS; i++) {
 							*dataBuffer++ = aci_sumDiff[i] / sum[i]; //aci
-							*dataBuffer++ = h_t_h[i] * segments_in_time_span_log2_inverse; //h_t
-							*dataBuffer++ = cvr_count[i] * segments_in_time_span_inverse; //cvr
+							*dataBuffer++ = h_t_h[i]
+									* segments_in_time_span_log2_inverse; //h_t
+							*dataBuffer++ = cvr_count[i]
+									* segments_in_time_span_inverse; //cvr
 							*dataBuffer++ = sum[i]; //sum of ffts
+							floatsAdded += N_INDICES;
 						}
 						/* Update cvr_noise that will be used for the next time_span */
 						for (int i = 0; i < FREQ_BINS; i++) {
-							float32_t mean = sum[i] * segments_in_time_span_inverse;
-							cvr_noise[i] = mean + NOISE_FACTOR * sqrtf(
-									sumSquared[i] * segments_in_time_span_inverse
-									- mean * mean);
+							float32_t mean = sum[i]
+									* segments_in_time_span_inverse;
+							cvr_noise[i] =
+									mean
+											+ NOISE_FACTOR
+													* sqrtf(
+															sumSquared[i]
+																	* segments_in_time_span_inverse
+																	- mean
+																			* mean);
 						}
 						reset(aci_sumDiff, FREQ_BINS);
 						reset(sum, FREQ_BINS);
@@ -762,6 +829,12 @@ bool enableLED) {
 						dataCount = 0;
 						cycleCount++;
 					}
+				}
+				/* Write to SD card if max number is added to the buffer */
+				if (floatsAdded > MAX_FLOATS_TO_WRITE - N_INDICES) {
+					dataBuffer -= floatsAdded;
+					AudioMoth_writeToFile(dataBuffer, floatsAdded * 4);
+					floatsAdded = 0;
 				}
 			}
 
@@ -775,149 +848,150 @@ bool enableLED) {
 		AudioMoth_sleep();
 	}
 
-	/* Light LED during SD card write if appropriate */
+	/* Write to SD card (also works if the recoding is cancelled) */
 
 	if (enableLED) {
 		AudioMoth_setRedLED(true);
 	}
 
-	/* Write to SD card (also works if the recoding is cancelled) */
+	dataBuffer -= floatsAdded;
+	AudioMoth_writeToFile(dataBuffer, floatsAdded * 4);
 
-	AudioMoth_writeToFile(dataBuffer - N_INDICES * FREQ_BINS * cycleCount, N_INDICES * FREQ_BINS * cycleCount * 4);
+	/* Close the file */
 
-    /* Close the file */
-
-    RETURN_ON_ERROR(AudioMoth_closeFile());
+	RETURN_ON_ERROR(AudioMoth_closeFile());
 
 	/* Clear LED */
 
-	AudioMoth_setRedLED(false);
 	AudioMoth_setGreenLED(false);
+	AudioMoth_setRedLED(false);
 
 }
 
 static void scheduleRecording(uint32_t currentTime,
-	uint32_t *timeOfNextRecording, uint32_t *durationOfNextRecording) {
+		uint32_t *timeOfNextRecording, uint32_t *durationOfNextRecording) {
 
-/* No active periods */
+	/* No active periods */
 
-if (configSettings->activeStartStopPeriods == 0) {
+	if (configSettings->activeStartStopPeriods == 0) {
 
-	*timeOfNextRecording = UINT32_MAX;
+		*timeOfNextRecording = UINT32_MAX;
 
-	*durationOfNextRecording = configSettings->recordDuration;
-
-	return;
-
-}
-
-/* Calculate the number of seconds of this day */
-
-time_t rawtime = currentTime;
-
-struct tm *time = gmtime(&rawtime);
-
-uint32_t currentSeconds = SECONDS_IN_HOUR * time->tm_hour
-		+ SECONDS_IN_MINUTE * time->tm_min + time->tm_sec;
-
-/* Check each active start stop period */
-
-uint32_t durationOfCycle = configSettings->recordDuration
-		+ configSettings->sleepDuration;
-
-for (uint32_t i = 0; i < configSettings->activeStartStopPeriods; i += 1) {
-
-	startStopPeriod_t *period = configSettings->startStopPeriods + i;
-
-	/* Calculate the start and stop time of the current period */
-
-	uint32_t startSeconds = SECONDS_IN_MINUTE * period->startMinutes;
-
-	uint32_t stopSeconds = SECONDS_IN_MINUTE * period->stopMinutes;
-
-	/* Calculate time to next period or time to next start in this period */
-
-	if (currentSeconds < startSeconds) {
-
-		*timeOfNextRecording = currentTime + (startSeconds - currentSeconds);
-
-		*durationOfNextRecording = MIN(configSettings->recordDuration,
-				stopSeconds - startSeconds);
+		*durationOfNextRecording = configSettings->recordDuration;
 
 		return;
 
-	} else if (currentSeconds < stopSeconds) {
+	}
 
-		uint32_t cycles = (currentSeconds - startSeconds + durationOfCycle)
-				/ durationOfCycle;
+	/* Calculate the number of seconds of this day */
 
-		uint32_t secondsFromStartOfPeriod = cycles * durationOfCycle;
+	time_t rawtime = currentTime;
 
-		if (secondsFromStartOfPeriod < stopSeconds - startSeconds) {
+	struct tm *time = gmtime(&rawtime);
 
-			*timeOfNextRecording = currentTime + (startSeconds - currentSeconds)
-					+ secondsFromStartOfPeriod;
+	uint32_t currentSeconds = SECONDS_IN_HOUR * time->tm_hour
+			+ SECONDS_IN_MINUTE * time->tm_min + time->tm_sec;
+
+	/* Check each active start stop period */
+
+	uint32_t durationOfCycle = configSettings->recordDuration
+			+ configSettings->sleepDuration;
+
+	for (uint32_t i = 0; i < configSettings->activeStartStopPeriods; i += 1) {
+
+		startStopPeriod_t *period = configSettings->startStopPeriods + i;
+
+		/* Calculate the start and stop time of the current period */
+
+		uint32_t startSeconds = SECONDS_IN_MINUTE * period->startMinutes;
+
+		uint32_t stopSeconds = SECONDS_IN_MINUTE * period->stopMinutes;
+
+		/* Calculate time to next period or time to next start in this period */
+
+		if (currentSeconds < startSeconds) {
+
+			*timeOfNextRecording = currentTime
+					+ (startSeconds - currentSeconds);
 
 			*durationOfNextRecording = MIN(configSettings->recordDuration,
-					stopSeconds - startSeconds - secondsFromStartOfPeriod);
+					stopSeconds - startSeconds);
 
 			return;
+
+		} else if (currentSeconds < stopSeconds) {
+
+			uint32_t cycles = (currentSeconds - startSeconds + durationOfCycle)
+					/ durationOfCycle;
+
+			uint32_t secondsFromStartOfPeriod = cycles * durationOfCycle;
+
+			if (secondsFromStartOfPeriod < stopSeconds - startSeconds) {
+
+				*timeOfNextRecording = currentTime
+						+ (startSeconds - currentSeconds)
+						+ secondsFromStartOfPeriod;
+
+				*durationOfNextRecording = MIN(configSettings->recordDuration,
+						stopSeconds - startSeconds - secondsFromStartOfPeriod);
+
+				return;
+
+			}
 
 		}
 
 	}
 
-}
+	/* Calculate time until first period tomorrow */
 
-/* Calculate time until first period tomorrow */
+	startStopPeriod_t *firstPeriod = configSettings->startStopPeriods;
 
-startStopPeriod_t *firstPeriod = configSettings->startStopPeriods;
+	uint32_t startSeconds = SECONDS_IN_MINUTE * firstPeriod->startMinutes;
 
-uint32_t startSeconds = SECONDS_IN_MINUTE * firstPeriod->startMinutes;
+	uint32_t stopSeconds = SECONDS_IN_MINUTE * firstPeriod->stopMinutes;
 
-uint32_t stopSeconds = SECONDS_IN_MINUTE * firstPeriod->stopMinutes;
+	*timeOfNextRecording = currentTime + (SECONDS_IN_DAY - currentSeconds)
+			+ startSeconds;
 
-*timeOfNextRecording = currentTime + (SECONDS_IN_DAY - currentSeconds)
-		+ startSeconds;
-
-*durationOfNextRecording = MIN(configSettings->recordDuration,
-		stopSeconds - startSeconds);
+	*durationOfNextRecording = MIN(configSettings->recordDuration,
+			stopSeconds - startSeconds);
 
 }
 
 static void flashLedToIndicateBatteryLife(void) {
 
-uint32_t numberOfFlashes = LOW_BATTERY_LED_FLASHES;
+	uint32_t numberOfFlashes = LOW_BATTERY_LED_FLASHES;
 
-AM_batteryState_t batteryState = AudioMoth_getBatteryState();
+	AM_batteryState_t batteryState = AudioMoth_getBatteryState();
 
-/* Set number of flashes according to battery state */
+	/* Set number of flashes according to battery state */
 
-if (batteryState > AM_BATTERY_LOW) {
+	if (batteryState > AM_BATTERY_LOW) {
 
-	numberOfFlashes = (batteryState >= AM_BATTERY_4V6) ? 4 :
-						(batteryState >= AM_BATTERY_4V4) ? 3 :
-						(batteryState >= AM_BATTERY_4V0) ? 2 : 1;
-
-}
-
-/* Flash LED */
-
-for (uint32_t i = 0; i < numberOfFlashes; i += 1) {
-
-	FLASH_LED(Red, SHORT_LED_FLASH_DURATION)
-
-	if (numberOfFlashes == LOW_BATTERY_LED_FLASHES) {
-
-		AudioMoth_delay(SHORT_LED_FLASH_DURATION);
-
-	} else {
-
-		AudioMoth_delay(LONG_LED_FLASH_DURATION);
+		numberOfFlashes = (batteryState >= AM_BATTERY_4V6) ? 4 :
+							(batteryState >= AM_BATTERY_4V4) ? 3 :
+							(batteryState >= AM_BATTERY_4V0) ? 2 : 1;
 
 	}
 
-}
+	/* Flash LED */
+
+	for (uint32_t i = 0; i < numberOfFlashes; i += 1) {
+
+		FLASH_LED(Red, SHORT_LED_FLASH_DURATION)
+
+		if (numberOfFlashes == LOW_BATTERY_LED_FLASHES) {
+
+			AudioMoth_delay(SHORT_LED_FLASH_DURATION);
+
+		} else {
+
+			AudioMoth_delay(LONG_LED_FLASH_DURATION);
+
+		}
+
+	}
 
 }
 
