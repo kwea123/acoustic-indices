@@ -40,8 +40,8 @@
 #define NUMBER_OF_SAMPLES_IN_BUFFER         512
 #define NUMBER_OF_SAMPLES_IN_DMA_TRANSFER   512
 #define NUMBER_OF_BUFFERS_TO_SKIP           32
-#define MAX_FLOATS_TO_WRITE				8*1024			//the maximum floats to write in one call
-#define MAX_BYTES_TO_WRITE					32*1024			//the maximum bytes to write in one call
+#define MAX_FLOATS_TO_WRITE		    8*1024			//the maximum floats to write in one call
+#define MAX_BYTES_TO_WRITE		    32*1024			//the maximum bytes to write in one call
 static volatile int dataCount = -NUMBER_OF_BUFFERS_TO_SKIP;
 
 /* WAVE header constant */
@@ -341,15 +341,15 @@ int main(void) {
 
 	}
 
-    /* Handle the case that the switch is in USB position  */
+        /* Handle the case that the switch is in USB position  */
 
-    if (switchPosition == AM_SWITCH_USB) {
+        if (switchPosition == AM_SWITCH_USB) {
 
-        AudioMoth_handleUSB();
+            AudioMoth_handleUSB();
 
-        SAVE_SWITCH_POSITION_AND_POWER_DOWN(DEFAULT_WAIT_INTERVAL);
+            SAVE_SWITCH_POSITION_AND_POWER_DOWN(DEFAULT_WAIT_INTERVAL);
 
-    }
+        }
 
 	/* Handle the case that the switch is in CUSTOM position but the time has not been set */
 
