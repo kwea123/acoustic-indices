@@ -267,15 +267,12 @@ configSettings_t defaultConfigSettings = {
     .oversampleRate = 16,
     .sampleRate = 48000,
     .sleepDuration = 0,
-    .recordDuration = 3600,
+    .recordDuration = 43200,
     .enableLED = 1,
-    .activeStartStopPeriods = 5,
+    .activeStartStopPeriods = 2,
     .startStopPeriods = {
-        {.startMinutes = 60, .stopMinutes = 120},
-        {.startMinutes = 300, .stopMinutes = 420},
-        {.startMinutes = 540, .stopMinutes = 600},
-        {.startMinutes = 720, .stopMinutes = 780},
-        {.startMinutes = 900, .stopMinutes = 960}
+    	{.startMinutes = 0, .stopMinutes = 720},
+        {.startMinutes = 720, .stopMinutes = 1440}
     }
 };
 
@@ -526,14 +523,6 @@ void AudioMoth_usbApplicationPacketRequested(uint32_t messageType,
 
 void AudioMoth_usbApplicationPacketReceived(uint32_t messageType,
 		uint8_t* receiveBuffer, uint8_t *transmitBuffer, uint32_t size) {
-
-	/* Copy the USB packet contents to the back-up register data structure location */
-
-	memcpy(configSettings, receiveBuffer + 1, sizeof(configSettings_t));
-
-	/* Copy the back-up register data structure to the USB packet */
-
-	memcpy(transmitBuffer + 1, configSettings, sizeof(configSettings_t));
 
 	/* Set the time */
 
@@ -876,14 +865,6 @@ bool enableLED) {
 static void scheduleRecording(uint32_t currentTime,
 		uint32_t *timeOfNextRecording, uint32_t *durationOfNextRecording) {
 
-//	/* No active periods */
-//
-//	if (configSettings->activeStartStopPeriods == 0) {
-//
-//		configSettings->activeStartStopPeriods = 5;
-//
-//	}
-
 	/* Calculate the number of seconds of this day */
 
 	time_t rawtime = currentTime;
@@ -919,26 +900,6 @@ static void scheduleRecording(uint32_t currentTime,
 					stopSeconds - startSeconds);
 
 			return;
-
-		} else if (currentSeconds < stopSeconds) {
-
-			uint32_t cycles = (currentSeconds - startSeconds + durationOfCycle)
-					/ durationOfCycle;
-
-			uint32_t secondsFromStartOfPeriod = cycles * durationOfCycle;
-
-			if (secondsFromStartOfPeriod < stopSeconds - startSeconds) {
-
-				*timeOfNextRecording = currentTime
-						+ (startSeconds - currentSeconds)
-						+ secondsFromStartOfPeriod;
-
-				*durationOfNextRecording = MIN(configSettings->recordDuration,
-						stopSeconds - startSeconds - secondsFromStartOfPeriod);
-
-				return;
-
-			}
 
 		}
 
