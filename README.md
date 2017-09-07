@@ -11,7 +11,7 @@ Configure [Audiomoth](https://www.openacousticdevices.info/) by following these 
 If the time is not set, switching to "CUSTOM" will result in blinking of both LEDs, which means that you need to set the time.  
 Once the time is set, the device will record the acoustic indices (ACI, H[t], CVR, FFT_SUM) computed every minute continuously in the same order. To stop recording, change the switch position back to "USB/OFF".  
 
-The binary file is provided in the folder `audiomoth_indices`.
+The binary file for audiomoth `audiomoth.bin`is provided in the folder `audiomoth_indices`.
 
 # Read acoustic indices, and draw false color images
 
