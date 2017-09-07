@@ -3,11 +3,12 @@
 Configure [Audiomoth](https://www.openacousticdevices.info/) by following these steps :    
 
 1. Download [Timesetter](https://www.openacousticdevices.info/timesetter-app) and install, open it.   
-2. Connect Audiomoth to your computer, and set the switch to "USB/OFF" (the middle one). You should see the red LED blinking for a while.
+2. Connect Audiomoth to your computer, and set the switch to "USB/OFF" (the middle one). You should see the red LED blinking for a while, then the green one will light up.
 3. If Audiomoth is correctly recognised by your computer, the "Set time" button in Timesetter should be active now. Press it. The device is now configured.  
 4. If you want to record the indices right away (e.g. for the sake of testing), switch to "DEFAULT", the device will start recording immediately.
 5. Otherwise, switch to "CUSTOM" will wait until the start of the next hour to start recording. While waiting, the green LED will blink.  
   
+If the time is not set, switching to "CUSTOM" will result in blinking of both LEDs, which means that you need to set the time.  
 Once the time is set, the device will record the acoustic indices (ACI, H[t], CVR, FFT_SUM) computed every minute continuously in the same order. To stop recording, change the switch position back to "USB/OFF".  
 
 The binary file is provided in the folder `audiomoth_indices`.
