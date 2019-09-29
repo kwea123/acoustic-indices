@@ -24,3 +24,6 @@ Run `python readIndices.py your-directory` to get the output, which will be crea
 The output is a .pdf file, containing false color images for indices ACI, H[t] and CVR, and a RGB image using the above three indices in the same order. The name of the file is the timestamp of the time when the recording started. You can use [Timestamp Converter](https://www.epochconverter.com/hex) to convert it to a readable string.
 
 Some example files and their outputs are provided in `testdir`.  
+
+# Dissertation
+[dissertation](dissertation.pdf)
